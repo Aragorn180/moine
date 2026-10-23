@@ -33,23 +33,30 @@ const COMMON = [
   { q: 'KL ?', mode: 'grade' },
   { q: 'SMT ?', mode: 'grade' },
 ];
+// Tirés des plans Carnet : CRT Daily (protocole CRT, entrée H1), CRT H4 = plan « Candle Daily »,
+// Ara's Model = turtle soups et entrée limite H1, sans CRT.
 const PLANS = {
   daily: { name: 'CRT Daily', q: [
     { q: 'Daily ?', dir: WEEKLY, mode: 'must', why: 'Daily contre le trade' },
     { q: 'CRT Daily valide ?', mode: 'must', why: 'CRT Daily pas valide' },
-    { q: 'Purge horaire HP ?', mode: 'grade' },
-    { q: 'Entrée après la purge ?', mode: 'must', why: 'Entrée anticipée' },
+    { q: 'CRT H4 apparié ?', mode: 'grade' },
+    { q: 'Horaire TS 1h · 5h · 9h ?', mode: 'grade' },
+    { q: 'B2 purge d\'abord ?', mode: 'grade' },
+    { q: 'Entrée H1 après la purge ?', mode: 'must', why: 'Entrée anticipée' },
   ] },
   h4: { name: 'CRT H4', q: [
-    { q: 'Daily ?', dir: WEEKLY, mode: 'must', why: 'Daily contre le trade' },
+    { q: 'Daily ?', dir: WEEKLY, mode: 'must', why: 'Daily pas tranchée ou contre le trade' },
     { q: 'CRT H4 valide ?', mode: 'must', why: 'CRT H4 pas valide' },
-    { q: 'Purge horaire 1h · 5h · 9h ?', mode: 'grade' },
+    { q: 'Purge à l\'ouverture 21h · 1h · 5h · 9h ?', mode: 'grade' },
+    { q: 'Reclose dans le range ?', mode: 'must', why: 'Pas de reclose' },
     { q: 'Entrée M15 après la purge ?', mode: 'must', why: 'Entrée anticipée' },
+    { q: 'Modèle 1 · 2 · 3 · OTE ?', mode: 'must', why: 'Pas de modèle d\'entrée' },
   ] },
   ara: { name: 'Ara\'s Model 🧪', q: [
-    { q: 'CRT Daily valide ?', mode: 'must', why: 'CRT Daily pas valide' },
+    { q: 'Turtle soup fait ?', mode: 'must', why: 'Pas de turtle soup' },
     { q: 'TS 1 dans le bon quart Daily ?', mode: 'grade' },
     { q: 'TS 2 dans le bon quart H4 ?', mode: 'grade' },
+    { q: 'OB H1 ?', mode: 'grade' },
     { q: 'Entrée H1 après les TS ?', mode: 'must', why: 'Entrée anticipée' },
   ] },
 };
