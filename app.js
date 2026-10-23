@@ -4,7 +4,10 @@
 
 const KEY = 'moine.v1';
 const DEFAULTS = { capital: 50000, riskA: 0.5, riskB: 0.25, cooldownMin: 30, maxTrades: 1 };
-const PAIRS = { GBPUSD: 'GBPUSD', EURUSD: 'EURUSD', BTCUSDT: 'BTCUSDT' };
+// Narrative hebdo obligatoire sur ces trois actifs ; seuls EURUSD et BTCUSDT se tradent (DXY = lecture).
+const ASSETS = ['DXY', 'EURUSD', 'BTCUSDT'];
+const PAIRS = ['EURUSD', 'BTCUSDT'];
+const UNLOCK = 'MOINE|'; // préfixe du jeton lu par le raccourci MetaTrader
 const QUARTERS = [['Q1', 17], ['Q2', 21], ['Q3', 1], ['Q4', 5], ['Q5', 9], ['Q6', 13]];
 const HP = new Set([1, 2, 3, 4]); // Q2..Q5 : ouvertures 21h, 1h, 5h, 9h NY
 const BREAKS = ['SL déplacé', 'Sortie anticipée', 'Surtaille', 'Ré-entrée', 'Hors plan'];
@@ -61,15 +64,38 @@ function applyPending() {
   }
 }
 
+// ---------- narrative ----------
+const assetDone = a => a && a.bias && (a.bias === 'Observation' || (a.dol && a.key));
+const narrative = (k = weekKey()) => S.weeks[k]?.assets || {};
+const missingAssets = (k = weekKey()) => ASSETS.filter(x => !assetDone(narrative(k)[x]));
+const biasOf = pair => narrative()[pair]?.bias;
+
+// Fin de validité du déverrouillage MT5 : dimanche 17h NY qui ouvre la semaine suivante.
+function unlockExpiry(k = weekKey()) {
+  const d = addDays(k, 6);
+  for (const off of ['-04:00', '-05:00']) {
+    const t = Date.parse(`${d}T17:00:00${off}`);
+    if (ny(t).h === 17) return t;
+  }
+}
+// Heure locale de l'iPhone, format que Raccourcis sait relire sans ambiguïté.
+function unlockToken() {
+  const x = new Date(unlockExpiry()), p = n => String(n).padStart(2, '0');
+  return `${UNLOCK}${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())} ${p(x.getHours())}:${p(x.getMinutes())}`;
+}
+async function copyUnlock() {
+  try { await navigator.clipboard.writeText(unlockToken()); return true; } catch (e) { return false; }
+}
+
 // ---------- statut du jour ----------
 const tradesOn = d => S.trades.filter(t => t.day === d);
 function status() {
-  const now = Date.now(), d = tradingDay(), wk = S.weeks[weekKey()];
+  const now = Date.now(), d = tradingDay(), miss = missingAssets();
+  if (miss.length)
+    return { ok: false, cls: 'no', title: 'MT5 bloqué.', detail: `Narrative de la semaine à faire : ${miss.join(', ')}.`, go: 'week' };
   if (S.cooldownUntil > now)
     return { ok: false, cls: 'wait', title: 'Respire.', detail: `Plan refusé. Nouvel essai possible à ${hhmm(S.cooldownUntil)}.` };
-  if (!wk)
-    return { ok: false, cls: 'no', title: 'Pas de narrative.', detail: 'Écris la narrative de la semaine (onglet Semaine) avant tout trade.', go: 'week' };
-  if (wk.bias === 'Observation')
+  if (PAIRS.every(p => biasOf(p) === 'Observation'))
     return { ok: false, cls: 'no', title: 'Semaine d\'observation.', detail: 'Tu as décidé de regarder cette semaine. Tu regardes.' };
   if (tradesOn(d).length >= S.settings.maxTrades)
     return { ok: false, cls: 'no', title: 'Trade du jour pris.', detail: 'Rien d\'autre aujourd\'hui. Prochaine daily à 17h NY.' };
@@ -80,7 +106,7 @@ function status() {
       : 'Q1 : on attend la purge à l\'ouverture de 21h NY.' };
   if (forexClosed(d))
     return { ok: true, cls: 'wait', title: 'Forex fermé.', detail: 'BTCUSDT seulement.' };
-  return { ok: true, cls: 'ok', title: 'Fenêtre ouverte.', detail: `Biais ${wk.bias.toLowerCase()} · 1 trade max.` };
+  return { ok: true, cls: 'ok', title: 'Fenêtre ouverte.', detail: `${S.settings.maxTrades} trade max aujourd'hui.` };
 }
 
 // ---------- rendu ----------
@@ -104,7 +130,7 @@ function quartersStrip() {
 
 const VIEWS = {
   today() {
-    const st = status(), d = tradingDay(), n = ny(), wk = S.weeks[weekKey()];
+    const st = status(), d = tradingDay(), n = ny(), nar = narrative(), open = !missingAssets().length;
     const todays = tradesOn(d);
     return `
       <h1>Moine</h1>
@@ -115,11 +141,12 @@ const VIEWS = {
         ${quartersStrip()}
       </div>
       ${st.ok ? '<button class="primary" data-act="gate">Je veux entrer</button>'
-        : st.go ? `<button data-tab="${st.go}">Écrire la narrative</button>` : ''}
-      ${wk ? `<h2>Semaine</h2><div class="card">
-        <div class="row"><span class="dim">Biais</span><b>${esc(wk.bias)}</b></div>
-        <div class="row"><span class="dim">DOL</span><b>${esc(wk.dol)}</b></div>
-        <div class="row"><span class="dim">Key level</span><b>${esc(wk.key)}</b></div></div>` : ''}
+        : st.go ? `<button class="primary" data-tab="${st.go}">Écrire la narrative</button>` : ''}
+      ${open ? `<div style="margin-top:10px"><button data-act="unlock">Déverrouiller MT5</button></div>
+        <p class="dim small" style="margin:8px 4px 0">Valable jusqu'à dimanche ${hhmm(unlockExpiry())}.</p>` : ''}
+      <h2>Semaine</h2><div class="card">${ASSETS.map(x => `
+        <div class="row"><span class="dim">${x}</span>${assetDone(nar[x])
+          ? `<b>${esc(nar[x].bias)}</b>` : '<span class="tag r">À faire</span>'}</div>`).join('')}</div>
       ${todays.length ? `<h2>Aujourd'hui</h2>${todays.map(tradeCard).join('')}` : ''}
       <h2>Règles</h2>
       <div class="card small dim">
@@ -131,31 +158,29 @@ const VIEWS = {
   },
 
   week() {
-    const k = weekKey(), wk = S.weeks[k];
-    // Narrative figée une fois la semaine lancée : modifiable seulement le week-end.
-    const locked = wk && !forexClosed();
+    const k = weekKey(), nar = narrative(k);
+    // Un actif fait est figé une fois la semaine lancée ; on peut toujours compléter ceux qui manquent.
+    const frozen = x => assetDone(nar[x]) && !forexClosed();
+    const ph = { DXY: ['old high W 99.80', 'FVG D 98.95'], EURUSD: ['old low W 1.1520', 'OB D 1.1610'], BTCUSDT: ['old high W 112 000', 'FVG D 106 500'] };
     const past = Object.keys(S.weeks).filter(x => x !== k).sort().reverse().slice(0, 8);
     return `
       <h1>Semaine</h1>
-      <p class="sub">Semaine du ${frDay(k)}</p>
-      ${locked ? `<div class="card">
-          <div class="row"><span class="dim">Biais</span><b>${esc(wk.bias)}</b></div>
-          <div class="row"><span class="dim">DOL</span><b>${esc(wk.dol)}</b></div>
-          <div class="row"><span class="dim">Key level</span><b>${esc(wk.key)}</b></div>
-          ${wk.notes ? `<p class="dim small" style="margin-top:10px">${esc(wk.notes)}</p>` : ''}
-        </div><p class="dim small">Narrative figée jusqu'au week-end.</p>`
-      : `<div class="card">
-          <p class="dim small">Y → 6M → 3M → M → W. Pas aligné → semaine d'observation.</p>
-          <label>Biais</label>
-          <div class="choices three" id="bias">${['Long', 'Short', 'Observation'].map(b =>
-            `<button data-act="bias" data-v="${b}" class="${wk?.bias === b ? 'on' : ''}">${b}</button>`).join('')}</div>
-          <label>Draw on liquidity</label><input id="dol" value="${esc(wk?.dol)}" placeholder="ex. old high W 1.2850">
-          <label>Key level HTF</label><input id="key" value="${esc(wk?.key)}" placeholder="ex. OB D 1.2710">
-          <label>Notes</label><textarea id="notes">${esc(wk?.notes)}</textarea>
-          <div style="margin-top:16px"><button class="primary" data-act="saveWeek">Enregistrer</button></div>
-        </div>`}
+      <p class="sub">Semaine du ${frDay(k)} · Y → 6M → 3M → M → W. Pas aligné → Observation.</p>
+      ${ASSETS.map(x => frozen(x) ? `<h2>${x}</h2><div class="card">
+          <div class="row"><span class="dim">Biais</span><b>${esc(nar[x].bias)}</b></div>
+          ${nar[x].bias !== 'Observation' ? `<div class="row"><span class="dim">DOL</span><b>${esc(nar[x].dol)}</b></div>
+          <div class="row"><span class="dim">Key level</span><b>${esc(nar[x].key)}</b></div>` : ''}</div>`
+      : `<h2>${x}</h2><div class="card" data-asset="${x}">
+          <div class="choices three">${['Long', 'Short', 'Observation'].map(b =>
+            `<button data-act="bias" data-v="${b}" class="${nar[x]?.bias === b ? 'on' : ''}">${b}</button>`).join('')}</div>
+          <label>Draw on liquidity</label><input class="dol" value="${esc(nar[x]?.dol)}" placeholder="ex. ${ph[x][0]}">
+          <label>Key level HTF</label><input class="key" value="${esc(nar[x]?.key)}" placeholder="ex. ${ph[x][1]}">
+        </div>`).join('')}
+      ${ASSETS.some(x => !frozen(x)) ? `<label>Notes</label><textarea id="notes">${esc(S.weeks[k]?.notes)}</textarea>
+        <div style="margin-top:16px"><button class="primary" data-act="saveWeek">Enregistrer</button></div>`
+      : '<p class="dim small" style="margin-top:12px">Narrative figée jusqu\'au week-end.</p>'}
       ${past.length ? `<h2>Semaines passées</h2><div class="card">${past.map(p =>
-        `<div class="row"><span class="dim">${p}</span><b>${esc(S.weeks[p].bias)}</b></div>`).join('')}</div>` : ''}`;
+        `<div class="row"><span class="dim">${p}</span><b>${ASSETS.map(x => `${x} ${esc(narrative(p)[x]?.bias?.[0] || '·')}`).join(' · ')}</b></div>`).join('')}</div>` : ''}`;
   },
 
   journal() {
@@ -197,9 +222,17 @@ const VIEWS = {
       </div>
       <h2>Bloquer MetaTrader</h2>
       <div class="card small">
-        <p>App Raccourcis → Automatisation → <b>+</b> → <b>App</b> → MetaTrader 5 → <b>Est ouverte</b> → <b>Exécuter immédiatement</b>.</p>
-        <p>Action : <b>Ouvrir l'app</b> → Moine (ou <b>Ouvrir les URL</b> avec l'adresse de Moine).</p>
-        <p class="dim" style="margin:0">Chaque ouverture de MT5 te renvoie ici d'abord.</p>
+        <p>MT5 s'ouvre seulement si les narratives DXY, EURUSD et BTCUSDT sont faites. « Déverrouiller MT5 » copie un jeton valable jusqu'au dimanche 17h NY ; le raccourci le lit.</p>
+        <p>Raccourcis → Automatisation → <b>+</b> → <b>App</b> → MetaTrader 5 → <b>Est ouverte</b> → <b>Exécuter immédiatement</b> → Nouveau raccourci vide. Actions dans l'ordre :</p>
+        <ol style="padding-left:20px;margin:0 0 12px">
+          <li><b>Obtenir le presse-papiers</b></li>
+          <li><b>Si</b> Presse-papiers <b>commence par</b> <code>MOINE|</code> :<br><b>Enregistrer le fichier</b> Presse-papiers → dossier Raccourcis, « Demander où » désactivé, sous-chemin <code>moine.txt</code>, « Remplacer » activé. <b>Fin si</b>.</li>
+          <li><b>Obtenir le fichier du dossier</b> Raccourcis, <code>moine.txt</code>, « Erreur si introuvable » désactivé.</li>
+          <li><b>Remplacer le texte</b> <code>MOINE|</code> par rien dans Fichier.</li>
+          <li><b>Obtenir les dates de l'entrée</b> Texte remplacé.</li>
+          <li><b>Si</b> Dates <b>est après</b> Date actuelle : rien. <b>Sinon</b> : <b>Afficher la notification</b> « MT5 bloqué : narratives dans Moine », puis <b>Aller à l'écran d'accueil</b>. <b>Fin si</b>.</li>
+        </ol>
+        <p class="dim" style="margin:0">Au premier lancement, autorise toujours l'accès au presse-papiers.</p>
       </div>
       <h2>Données</h2>
       <div class="stack">
@@ -236,19 +269,19 @@ function cleanStreak() {
 // ---------- questionnaire d'entrée ----------
 // Une question par écran : pas de « tout cocher » réflexe.
 function gateSteps() {
-  const wk = S.weeks[weekKey()];
-  const closed = forexClosed();
+  const closed = forexClosed(), pair = gate?.a?.pair, a = narrative()[pair] || {};
   const yn = (q, failOn, reason, onPass) => ({ kind: 'yn', q, failOn, reason, onPass });
   return [
     ...STOPS_A.map((q, i) => yn(q, 'oui', `Stop A${i + 1}`)),
-    { kind: 'pick', q: 'Paire ?', key: 'pair', opts: Object.keys(PAIRS).filter(p => !closed || p === 'BTCUSDT') },
-    { kind: 'pick', q: 'La daily d\'aujourd\'hui ?', key: 'profile', opts: ['OHLC', 'OLHC', 'Pas tranché'],
+    { kind: 'pick', q: 'Paire ?', key: 'pair',
+      opts: PAIRS.filter(p => (!closed || p === 'BTCUSDT') && biasOf(p) !== 'Observation') },
+    { kind: 'pick', q: `La daily ${pair || ''} d'aujourd'hui ?`, key: 'profile', opts: ['OHLC', 'OLHC', 'Pas tranché'],
       check: v => v === 'Pas tranché' ? 'Daily pas tranchée'
-        : (v === 'OHLC' ? 'Short' : 'Long') !== wk.bias ? `Daily ${v} contre le biais ${wk.bias.toLowerCase()} de la semaine` : null },
+        : (v === 'OHLC' ? 'Short' : 'Long') !== a.bias ? `Daily ${v} contre le biais ${String(a.bias).toLowerCase()} ${pair} de la semaine` : null },
     yn('La purge est faite, nette, une seule — et je n\'ai posé aucun ordre avant ?', 'non', 'Purge pas faite ou ordre posé avant'),
     yn('La purge s\'est faite à l\'ouverture d\'une H4 HP (21h, 1h, 5h, 9h NY) et a reclose ?', null, null, 'hp'),
-    yn(`C'est sur le key level de la semaine${wk.key ? ` (${esc(wk.key)})` : ''} ?`, null, null, 'kl'),
-    yn('SMT : la paire sœur n\'a pas clôturé au-delà ?', null, null, 'smt'),
+    yn(`C'est sur le key level de la semaine${a.key ? ` (${esc(a.key)})` : ''} ?`, null, null, 'kl'),
+    yn(pair === 'EURUSD' ? 'SMT : le DXY n\'a pas clôturé au-delà de son extrême ?' : 'SMT : ETH n\'a pas clôturé au-delà de son extrême ?', null, null, 'smt'),
     { kind: 'grade' },
     { kind: 'numbers' },
     yn('SL derrière l\'extrême de la purge + marge (pas au pip) ?', 'non', 'SL mal placé'),
@@ -399,15 +432,29 @@ const ACTIONS = {
     t.r = r; t.broke = broke; save(); render();
   },
   bias(b) {
-    document.querySelectorAll('#bias button').forEach(x => x.classList.toggle('on', x === b));
+    b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
   },
-  saveWeek() {
-    const bias = document.querySelector('#bias button.on')?.dataset.v;
-    const dol = $('#dol').value.trim(), key = $('#key').value.trim();
-    if (!bias) return alert('Choisis un biais.');
-    if (bias !== 'Observation' && (!dol || !key)) return alert('DOL et key level obligatoires pour trader.');
-    S.weeks[weekKey()] = { bias, dol, key, notes: $('#notes').value.trim(), ts: Date.now() };
-    save(); tab = 'today'; render();
+  async saveWeek() {
+    const k = weekKey(), assets = { ...narrative(k) };
+    // On enregistre ce qui est rempli ; un actif incomplet reste « à faire » et garde MT5 bloqué.
+    for (const card of document.querySelectorAll('[data-asset]')) {
+      const x = card.dataset.asset, bias = card.querySelector('button.on')?.dataset.v;
+      const dol = card.querySelector('.dol').value.trim(), key = card.querySelector('.key').value.trim();
+      if (bias || dol || key) assets[x] = { bias, dol, key };
+    }
+    const dx = assets.DXY?.bias, eu = assets.EURUSD?.bias;
+    if (dx && eu && dx !== 'Observation' && dx === eu)
+      return alert(`DXY ${dx} et EURUSD ${eu} : incohérent. Le DXY et l'EURUSD vont en sens inverse.`);
+    S.weeks[k] = { ...S.weeks[k], assets, notes: $('#notes').value.trim(), ts: Date.now() };
+    save();
+    const miss = missingAssets(k);
+    if (miss.length) { alert(`Enregistré. Reste à faire : ${miss.join(', ')} (biais, DOL et key level).`); return render(); }
+    const copied = await copyUnlock();
+    alert(copied ? 'Narratives faites. MT5 déverrouillé : jeton copié, ouvre MT5.' : 'Narratives faites. Touche « Déverrouiller MT5 » sur l\'accueil.');
+    tab = 'today'; render();
+  },
+  async unlock() {
+    alert(await copyUnlock() ? 'Jeton copié. Ouvre MT5 maintenant.' : 'Copie impossible : réessaie.');
   },
   saveSettings() {
     const next = {};
