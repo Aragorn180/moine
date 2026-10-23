@@ -24,7 +24,7 @@ const BULLBEAR = [['Bullish', 'long'], ['Bearish', 'short']];
 const COMMON = [
   { q: 'Sens DOL ?', mode: 'must', why: 'Contre la DOL' },
   { q: 'News rouge ?', mode: 'stop', why: 'News rouge' },
-  { q: 'Biais tranché ?', mode: 'must', why: 'Biais pas tranché' },
+  { id: 'biais', q: 'Biais tranché ?', mode: 'must', why: 'Biais pas tranché' },
   { q: 'Contre un CRT noté ?', mode: 'stop', why: 'Contre un CRT noté' },
   { q: 'Weekly ?', dir: WEEKLY, mode: 'grade' },
   { q: 'Dealing range 20 ?', dir: BULLBEAR, mode: 'grade' },
@@ -52,12 +52,10 @@ const PLANS = {
     { q: 'Entrée M15 après la purge ?', mode: 'must', why: 'Entrée anticipée' },
     { q: 'Modèle 1 · 2 · 3 · OTE ?', mode: 'must', why: 'Pas de modèle d\'entrée' },
   ] },
-  ara: { name: 'Ara\'s Model 🧪', q: [
-    { q: 'Turtle soup fait ?', mode: 'must', why: 'Pas de turtle soup' },
-    { q: 'TS 1 dans le bon quart Daily ?', mode: 'grade' },
-    { q: 'TS 2 dans le bon quart H4 ?', mode: 'grade' },
-    { q: 'OB H1 ?', mode: 'grade' },
-    { q: 'Entrée H1 après les TS ?', mode: 'must', why: 'Entrée anticipée' },
+  // Règles d'Antoine (2026-10-23) : pas de question « Biais tranché », deux turtle soups H4 puis H1.
+  ara: { name: 'Ara\'s Model 🧪', skip: ['biais'], q: [
+    { q: 'Turtle soup sur la candle H4 ?', mode: 'must', why: 'Pas de turtle soup H4' },
+    { q: 'Turtle soup sur la candle H1 ?', mode: 'must', why: 'Pas de turtle soup H1' },
   ] },
 };
 const FINAL = [
@@ -367,7 +365,7 @@ function gateSteps() {
     { kind: 'pick', q: 'Paire ?', key: 'pair', opts: tradable(), all: ASSETS },
     ...(S.test ? [{ kind: 'pick', q: 'Sens ?', key: 'dir', opts: ['long', 'short'], all: ['long', 'short'] }] : []),
     { kind: 'pick', q: 'Plan ?', key: 'plan', opts: Object.keys(PLANS), all: Object.keys(PLANS) },
-    ...COMMON.map(ask('c')),
+    ...COMMON.map(ask('c')).filter(x => !plan?.skip?.includes(x.id)),
     ...(plan ? plan.q.map(ask('p')) : []),
     { kind: 'grade' },
     { kind: 'sheet' },
