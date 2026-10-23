@@ -17,7 +17,7 @@ const ASSETS = Object.keys(PAIRS);
 const REQUIRED = ['DXY', 'EURUSD', 'BTCUSDT'];
 
 // Questions courtes, une par écran. mode stop : « oui » = pas de trade. must : « non » (ou contre le sens) = pas de trade.
-// grade : compte pour le grade (tout bon = A, un raté = B, plus = pas de trade).
+// grade : compte pour le grade (tout bon = A, un ou deux ratés = B, plus = pas de trade).
 // dir : choix dont chaque réponse a un sens ; elle doit aller dans le sens du trade.
 const WEEKLY = [['OLHC', 'long'], ['OHLC', 'short']];
 const BULLBEAR = [['Bullish', 'long'], ['Bearish', 'short']];
@@ -201,7 +201,7 @@ const VIEWS = {
         Paire → plan → questions → fiche position.<br>
         Confluences : Weekly, DR 20 · 40 · 60, KL, SMT, purge horaire.<br>
         Jamais d'ordre posé avant la purge. RR ≥ 2.<br>
-        A = toutes → ${S.settings.riskA} % · B = une manquante → ${S.settings.riskB} % · sinon rien.
+        A = toutes → ${S.settings.riskA} % · B = une ou deux manquantes → ${S.settings.riskB} % · sinon rien.
       </div>`;
   },
 
@@ -376,7 +376,7 @@ function next() { gate.i++; render(); }
 function grade(a) {
   const keys = gateSteps().filter(x => x.mode === 'grade').map(x => x.key);
   const miss = keys.filter(k => !a.g[k]).length;
-  return miss === 0 ? 'A' : miss === 1 ? 'B' : null;
+  return miss === 0 ? 'A' : miss <= 2 ? 'B' : null;
 }
 
 function sizing(a) {
@@ -423,7 +423,7 @@ function renderGate() {
   }
   if (st.kind === 'grade') {
     const g = grade(a);
-    if (!g) { setTimeout(() => fail('Grade C : plus d\'une confluence manquante'), 0); return ''; }
+    if (!g) { setTimeout(() => fail('Grade C : plus de deux confluences manquantes'), 0); return ''; }
     a.grade = g;
     return `${head}<p class="dim">Grade</p><div class="grade">${g}</div>
       <p class="sub" style="margin-top:12px">Risque ${g === 'A' ? S.settings.riskA : S.settings.riskB} % du capital.</p>
