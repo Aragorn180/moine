@@ -4,9 +4,45 @@
 
 const KEY = 'moine.v1';
 const DEFAULTS = { capital: 50000, riskA: 0.5, riskB: 0.25, cooldownMin: 30, maxTrades: 1, unlockMin: 10 };
-// Narrative hebdo obligatoire sur ces trois actifs ; seuls EURUSD et BTCUSDT se tradent (DXY = lecture).
-const ASSETS = ['DXY', 'EURUSD', 'BTCUSDT'];
-const PAIRS = ['EURUSD', 'BTCUSDT'];
+// Actifs tradables. lot = $ par pip pour 1 lot (forex coté USD) ; sinon taille en $ par point.
+const PAIRS = {
+  DXY: { name: 'DXY', pip: 0.01, unit: 'pts', smt: 'l\'EURUSD' },
+  EURUSD: { name: 'EU', pip: 0.0001, unit: 'pips', lot: 10, smt: 'le DXY' },
+  GBPUSD: { name: 'GU', pip: 0.0001, unit: 'pips', lot: 10, smt: 'l\'EURUSD' },
+  BTCUSDT: { name: 'BTC', pip: 1, unit: '$', smt: 'ETH', h24: true },
+  NAS100: { name: 'NAS', pip: 1, unit: 'pts', smt: 'le S&P 500 (ES)' },
+};
+const ASSETS = Object.keys(PAIRS);
+// Narrative obligatoire chaque semaine sur ces trois-là, sinon MT5 reste bloqué. GU et NAS : seulement pour les trader.
+const REQUIRED = ['DXY', 'EURUSD', 'BTCUSDT'];
+
+// Questions oui/non par plan. stop : « oui » = pas de trade. must : « non » = pas de trade.
+// grade : compte pour le grade (tout oui = A, un non = B, plus = pas de trade).
+const PLANS = {
+  daily: { name: 'CRT Daily', q: [
+    { must: 'La daily est tranchée dans le sens de la narrative (OHLC → short, OLHC → long) ?', why: 'Daily pas tranchée ou contre la narrative' },
+    { must: 'CRT Daily valide : purge du range de la daily précédente puis reclose ?', why: 'CRT Daily pas valide' },
+    { grade: 'Purge horaire : à l\'ouverture d\'une H4 HP (21h, 1h, 5h ou 9h NY) ?' },
+    { grade: 'KL : la purge se fait sur le key level de la semaine ?' },
+    { grade: 'SMT : {smt} n\'a pas clôturé au-delà de son extrême ?' },
+    { must: 'Entrée en TF basse (H1 / M15) après la purge, aucun ordre posé avant ?', why: 'Entrée anticipée' },
+  ] },
+  h4: { name: 'CRT H4', q: [
+    { must: 'La H4 va dans le sens de la daily et de la narrative ?', why: 'H4 contre la daily ou la narrative' },
+    { must: 'CRT H4 valide : purge du range de la H4 précédente puis reclose ?', why: 'CRT H4 pas valide' },
+    { grade: 'Purge horaire canon : ouverture de 1h, 5h ou 9h NY ?' },
+    { grade: 'KL : la purge se fait sur un key level HTF ?' },
+    { grade: 'SMT : {smt} n\'a pas clôturé au-delà (Queen Slayer : le DXY a purgé son niveau) ?' },
+    { must: 'Entrée M15 au retour sur l\'entry, après la purge — jamais d\'ordre posé avant ?', why: 'Entrée anticipée' },
+  ] },
+  ara: { name: 'Ara\'s Model 🧪', q: [
+    { must: 'CRT Daily valide dans le sens de la narrative ?', why: 'CRT Daily pas valide' },
+    { grade: '1er TS : la purge tombe dans le bon quart de la Daily (blocs 4 h depuis 17h NY) ?' },
+    { grade: '2e TS : la purge tombe dans le bon quart de la H4 (blocs 1 h) ?' },
+    { grade: 'KL : les purges se font sur le key level ?' },
+    { must: 'Entrée H1 après les deux TS, aucun ordre posé avant ?', why: 'Entrée anticipée' },
+  ] },
+};
 const UNLOCK = 'MOINE|'; // préfixe du jeton lu par le raccourci MetaTrader
 const QUARTERS = [['Q1', 17], ['Q2', 21], ['Q3', 1], ['Q4', 5], ['Q5', 9], ['Q6', 13]];
 const HP = new Set([1, 2, 3, 4]); // Q2..Q5 : ouvertures 21h, 1h, 5h, 9h NY
@@ -14,14 +50,6 @@ const HP = new Set([1, 2, 3, 4]); // Q2..Q5 : ouvertures 21h, 1h, 5h, 9h NY
 const MANAGE = ['TP1 touché : partiel 50 %', 'BE du runner (clôture au-delà du FVG)', 'Clôture du vendredi', 'SL ou TP2 touché : vérifier'];
 const MANAGE_MIN = 5;
 const BREAKS = ['SL déplacé', 'Sortie anticipée', 'Surtaille', 'Ré-entrée', 'Hors plan'];
-const STOPS_A = [
-  'Mon biais HTF n\'est pas tranché (« 2 options », « les deux me vont ») ?',
-  'Je trade contre un CRT que j\'ai moi-même noté (en l\'appelant « trap ») ?',
-  'J\'ai écrit moi-même que ce n\'est pas HP, ou « ça peut être un trap » ?',
-  'Mon analyse est vide ou recopiée d\'un autre trade ?',
-  'Une news rouge (NFP, CPI, FOMC) tombe pendant le trade ?',
-  'Je prends ce trade parce que je n\'ai rien eu depuis longtemps ?',
-];
 
 // ---------- état ----------
 function load() {
@@ -70,7 +98,7 @@ function applyPending() {
 // ---------- narrative ----------
 const assetDone = a => a && a.bias && (a.bias === 'Observation' || (a.dol && a.key));
 const narrative = (k = weekKey()) => S.weeks[k]?.assets || {};
-const missingAssets = (k = weekKey()) => ASSETS.filter(x => !assetDone(narrative(k)[x]));
+const missingAssets = (k = weekKey()) => REQUIRED.filter(x => !assetDone(narrative(k)[x]));
 const biasOf = pair => narrative()[pair]?.bias;
 
 // MT5 est toujours bloqué : Moine ne l'ouvre que quelques minutes, après une fiche position
@@ -83,19 +111,24 @@ function copyUnlock(minutes) {
   const until = Date.now() + minutes * 60e3;
   return navigator.clipboard.writeText(unlockToken(until)).then(() => until, () => null);
 }
-const pip = pair => pair === 'BTCUSDT' ? 1 : 0.0001;
-const unit = pair => pair === 'BTCUSDT' ? '$' : 'pips';
+const pip = pair => PAIRS[pair].pip;
+const unit = pair => PAIRS[pair].unit;
+const pname = pair => PAIRS[pair]?.name || pair;
 const openTrade = () => S.trades.find(t => t.r == null);
+
+// Paires proposables : narrative faite, pas en Observation, marché ouvert.
+const tradable = () => ASSETS.filter(p => assetDone(narrative()[p]) && biasOf(p) !== 'Observation'
+  && (PAIRS[p].h24 || !forexClosed()));
 
 // ---------- statut du jour ----------
 const tradesOn = d => S.trades.filter(t => t.day === d);
 function status() {
   const now = Date.now(), d = tradingDay(), miss = missingAssets();
   if (miss.length)
-    return { ok: false, cls: 'no', title: 'MT5 bloqué.', detail: `Narrative de la semaine à faire : ${miss.join(', ')}.`, go: 'week' };
+    return { ok: false, cls: 'no', title: 'MT5 bloqué.', detail: `Narrative de la semaine à faire : ${miss.map(pname).join(', ')}.`, go: 'week' };
   if (S.cooldownUntil > now)
     return { ok: false, cls: 'wait', title: 'Respire.', detail: `Plan refusé. Nouvel essai possible à ${hhmm(S.cooldownUntil)}.` };
-  if (PAIRS.every(p => biasOf(p) === 'Observation'))
+  if (!tradable().length)
     return { ok: false, cls: 'no', title: 'Semaine d\'observation.', detail: 'Tu as décidé de regarder cette semaine. Tu regardes.' };
   if (tradesOn(d).length >= S.settings.maxTrades)
     return { ok: false, cls: 'no', title: 'Trade du jour pris.', detail: 'Rien d\'autre aujourd\'hui. Prochaine daily à 17h NY.' };
@@ -105,7 +138,7 @@ function status() {
       ? 'Après-midi NY : plus de setup. Prochaine ouverture HP à 21h NY.'
       : 'Q1 : on attend la purge à l\'ouverture de 21h NY.' };
   if (forexClosed(d))
-    return { ok: true, cls: 'wait', title: 'Forex fermé.', detail: 'BTCUSDT seulement.' };
+    return { ok: true, cls: 'wait', title: 'Marchés fermés.', detail: 'BTC seulement.' };
   return { ok: true, cls: 'ok', title: 'Fenêtre ouverte.', detail: `${S.settings.maxTrades} trade max aujourd'hui.` };
 }
 
@@ -144,15 +177,15 @@ const VIEWS = {
         : st.ok ? '<button class="primary" data-tab="position">Préparer une position</button>'
         : st.go ? `<button class="primary" data-tab="${st.go}">Écrire la narrative</button>` : ''}
       <h2>Semaine</h2><div class="card">${ASSETS.map(x => `
-        <div class="row"><span class="dim">${x}</span>${assetDone(nar[x])
-          ? `<b>${esc(nar[x].bias)}</b>` : '<span class="tag r">À faire</span>'}</div>`).join('')}</div>
+        <div class="row"><span class="dim">${pname(x)}</span>${assetDone(nar[x]) ? `<b>${esc(nar[x].bias)}</b>`
+          : REQUIRED.includes(x) ? '<span class="tag r">À faire</span>' : '<span class="dim small">—</span>'}</div>`).join('')}</div>
       ${todays.length ? `<h2>Aujourd'hui</h2>${todays.map(tradeCard).join('')}` : ''}
       <h2>Règles</h2>
       <div class="card small dim">
-        Daily tranchée (OHLC → short, OLHC → long) dans le sens de la DOL.<br>
-        Purge à l'ouverture d'une H4 HP (21h, 1h, 5h, 9h NY), sur le key level, reclose.<br>
-        Entrée M15 après la purge, jamais d'ordre posé avant. RR ≥ 2.<br>
-        A = 4/4 → ${S.settings.riskA} % · B = 3/4 → ${S.settings.riskB} % · sinon rien.
+        Paire → plan (CRT Daily, CRT H4, Ara's Model 🧪) → questions oui / non → fiche position.<br>
+        Dans le sens de la narrative, pas de news rouge, purge à l'heure, sur le KL, reclose.<br>
+        Jamais d'ordre posé avant la purge. RR ≥ 2.<br>
+        A = tout oui → ${S.settings.riskA} % · B = un non → ${S.settings.riskB} % · sinon rien.
       </div>`;
   },
 
@@ -182,16 +215,17 @@ const VIEWS = {
     const k = weekKey(), nar = narrative(k);
     // Un actif fait est figé une fois la semaine lancée ; on peut toujours compléter ceux qui manquent.
     const frozen = x => assetDone(nar[x]) && !forexClosed();
-    const ph = { DXY: ['old high W 99.80', 'FVG D 98.95'], EURUSD: ['old low W 1.1520', 'OB D 1.1610'], BTCUSDT: ['old high W 112 000', 'FVG D 106 500'] };
+    const ph = { DXY: ['old high W 99.80', 'FVG D 98.95'], EURUSD: ['old low W 1.1520', 'OB D 1.1610'], GBPUSD: ['old high W 1.3450', 'OB D 1.3320'], BTCUSDT: ['old high W 112 000', 'FVG D 106 500'], NAS100: ['old high W 25 400', 'FVG D 24 800'] };
+    const label = x => `${pname(x)}${REQUIRED.includes(x) ? '' : ' · optionnel'}`;
     const past = Object.keys(S.weeks).filter(x => x !== k).sort().reverse().slice(0, 8);
     return `
       <h1>Semaine</h1>
       <p class="sub">Semaine du ${frDay(k)} · Y → 6M → 3M → M → W. Pas aligné → Observation.</p>
-      ${ASSETS.map(x => frozen(x) ? `<h2>${x}</h2><div class="card">
+      ${ASSETS.map(x => frozen(x) ? `<h2>${label(x)}</h2><div class="card">
           <div class="row"><span class="dim">Biais</span><b>${esc(nar[x].bias)}</b></div>
           ${nar[x].bias !== 'Observation' ? `<div class="row"><span class="dim">DOL</span><b>${esc(nar[x].dol)}</b></div>
           <div class="row"><span class="dim">Key level</span><b>${esc(nar[x].key)}</b></div>` : ''}</div>`
-      : `<h2>${x}</h2><div class="card" data-asset="${x}">
+      : `<h2>${label(x)}</h2><div class="card" data-asset="${x}">
           <div class="choices three">${['Long', 'Short', 'Observation'].map(b =>
             `<button data-act="bias" data-v="${b}" class="${nar[x]?.bias === b ? 'on' : ''}">${b}</button>`).join('')}</div>
           <label>Draw on liquidity</label><input class="dol" value="${esc(nar[x]?.dol)}" placeholder="ex. ${ph[x][0]}">
@@ -201,7 +235,7 @@ const VIEWS = {
         <div style="margin-top:16px"><button class="primary" data-act="saveWeek">Enregistrer</button></div>`
       : '<p class="dim small" style="margin-top:12px">Narrative figée jusqu\'au week-end.</p>'}
       ${past.length ? `<h2>Semaines passées</h2><div class="card">${past.map(p =>
-        `<div class="row"><span class="dim">${p}</span><b>${ASSETS.map(x => `${x} ${esc(narrative(p)[x]?.bias?.[0] || '·')}`).join(' · ')}</b></div>`).join('')}</div>` : ''}`;
+        `<div class="row"><span class="dim">${p}</span><b>${ASSETS.map(x => `${pname(x)} ${esc(narrative(p)[x]?.bias?.[0] || '·')}`).join(' · ')}</b></div>`).join('')}</div>` : ''}`;
   },
 
   journal() {
@@ -273,7 +307,7 @@ function tradeCard(t) {
        <div class="row"><span class="dim">Plan</span>${t.broke.length
          ? `<span class="tag r">${t.broke.map(esc).join(', ')}</span>` : '<span class="tag g">Respecté</span>'}</div>`;
   return `<div class="card ticket">
-    <div class="row"><b>${t.pair} ${t.dir === 'long' ? '↑ Long' : '↓ Short'}</b><span class="tag">Grade ${t.grade} · ${t.risk} %</span></div>
+    <div class="row"><b>${pname(t.pair)} ${t.dir === 'long' ? '↑ Long' : '↓ Short'}</b><span class="tag">${t.plan ? esc(PLANS[t.plan].name) + ' · ' : ''}${t.grade} · ${t.risk} %</span></div>
     ${t.entry != null ? `<div class="row"><span class="dim">Entrée</span><b>${t.entry}</b></div>
     <div class="row"><span class="dim">SL</span><b>${t.sl} (${t.stop} ${unit(t.pair)})</b></div>
     <div class="row"><span class="dim">TP1 / TP2</span><b>${t.tp1} / ${t.tp2}</b></div>
@@ -295,30 +329,33 @@ function cleanStreak() {
 // ---------- questionnaire d'entrée ----------
 // Une question par écran : pas de « tout cocher » réflexe.
 function gateSteps() {
-  const closed = forexClosed(), pair = gate?.a?.pair, a = narrative()[pair] || {};
-  const yn = (q, failOn, reason, onPass) => ({ kind: 'yn', q, failOn, reason, onPass });
+  const a = gate?.a || {}, nar = narrative()[a.pair] || {};
+  const yn = (q, o) => ({ kind: 'yn', q, ...o });
+  const plan = PLANS[a.plan];
+  const smt = a.pair ? PAIRS[a.pair].smt : '';
   return [
-    ...STOPS_A.map((q, i) => yn(q, 'oui', `Stop A${i + 1}`)),
-    { kind: 'pick', q: 'Paire ?', key: 'pair',
-      opts: PAIRS.filter(p => (!closed || p === 'BTCUSDT') && biasOf(p) !== 'Observation') },
-    { kind: 'pick', q: `La daily ${pair || ''} d'aujourd'hui ?`, key: 'profile', opts: ['OHLC', 'OLHC', 'Pas tranché'],
-      check: v => v === 'Pas tranché' ? 'Daily pas tranchée'
-        : (v === 'OHLC' ? 'Short' : 'Long') !== a.bias ? `Daily ${v} contre le biais ${String(a.bias).toLowerCase()} ${pair} de la semaine` : null },
-    yn('La purge est faite, nette, une seule — et je n\'ai posé aucun ordre avant ?', 'non', 'Purge pas faite ou ordre posé avant'),
-    yn('La purge s\'est faite à l\'ouverture d\'une H4 HP (21h, 1h, 5h, 9h NY) et a reclose ?', null, null, 'hp'),
-    yn(`C'est sur le key level de la semaine${a.key ? ` (${esc(a.key)})` : ''} ?`, null, null, 'kl'),
-    yn(pair === 'EURUSD' ? 'SMT : le DXY n\'a pas clôturé au-delà de son extrême ?' : 'SMT : ETH n\'a pas clôturé au-delà de son extrême ?', null, null, 'smt'),
+    { kind: 'pick', q: 'Quelle paire ?', key: 'pair', opts: tradable(), all: ASSETS },
+    { kind: 'pick', q: 'Quel plan ?', key: 'plan', opts: Object.keys(PLANS), all: Object.keys(PLANS) },
+    yn(`Le trade va dans le sens de la narrative ${pname(a.pair)} (${String(nar.bias).toLowerCase()}) — DOL ${esc(nar.dol)} ?`,
+      { failOn: 'non', reason: 'Contre la narrative de la semaine' }),
+    yn('News rouge (NFP, CPI, FOMC…) pendant le trade ?', { failOn: 'oui', reason: 'News rouge' }),
+    yn('Mon biais n\'est pas tranché (« 2 options », « les deux me vont ») ?', { failOn: 'oui', reason: 'Biais pas tranché' }),
+    yn('Je trade contre un CRT que j\'ai moi-même noté (en l\'appelant « trap ») ?', { failOn: 'oui', reason: 'Contre un CRT noté' }),
+    ...(plan ? plan.q.map((x, i) => x.must
+      ? yn(x.must.replace('{smt}', smt), { failOn: 'non', reason: x.why })
+      : yn(x.grade.replace('{smt}', smt), { gradeKey: 'g' + i })) : []),
     { kind: 'grade' },
     { kind: 'sheet' },
-    yn('SL derrière l\'extrême de la purge + marge (pas au pip) ?', 'non', 'SL mal placé'),
-    yn('TP1 (50 % du CRT), TP2 et BE sont écrits avant d\'entrer ?', 'non', 'Sortie pas écrite'),
-    yn('Je suis calme ou focus — pas fatigué, pas anxieux, pas en rattrapage ?', 'non', 'État émotionnel'),
+    yn('SL derrière l\'extrême de la purge + marge (pas au pip) ?', { failOn: 'non', reason: 'SL mal placé' }),
+    yn('TP1 (50 % du CRT), TP2 et BE sont écrits ?', { failOn: 'non', reason: 'Sortie pas écrite' }),
+    yn('Je prends ce trade parce que je n\'ai rien eu depuis longtemps ?', { failOn: 'oui', reason: 'Trade de rattrapage' }),
+    yn('Je suis calme ou focus — pas fatigué, pas anxieux ?', { failOn: 'non', reason: 'État émotionnel' }),
     { kind: 'oath' },
     { kind: 'ticket' },
   ];
 }
 
-function startGate() { gate = { i: 0, a: { hp: false, kl: false, smt: false } }; render(); }
+function startGate() { gate = { i: 0, a: { g: {} } }; render(); }
 
 function fail(reason) {
   const now = Date.now();
@@ -332,17 +369,19 @@ function fail(reason) {
 function next() { gate.i++; render(); }
 
 function grade(a) {
-  const n = 1 + a.hp + a.kl + a.smt; // la daily tranchée compte pour 1
-  return n === 4 ? 'A' : n === 3 ? 'B' : null;
+  const keys = gateSteps().filter(x => x.gradeKey).map(x => x.gradeKey);
+  const miss = keys.filter(k => !a.g[k]).length;
+  return miss === 0 ? 'A' : miss === 1 ? 'B' : null;
 }
 
 function sizing(a) {
   const risk = a.grade === 'A' ? S.settings.riskA : S.settings.riskB;
   const usd = S.settings.capital * risk / 100;
-  // Forex coté USD : 10 $ par pip pour 1 lot. BTC : stop en $, taille en BTC.
-  const size = a.pair === 'BTCUSDT'
-    ? `${(usd / a.stop).toFixed(4)} BTC`
-    : `${(Math.floor(usd / (a.stop * 10) * 100) / 100).toFixed(2)} lot`;
+  // Forex coté USD : 10 $ par pip pour 1 lot. BTC : stop en $, taille en BTC. Indices : $ par point.
+  const P = PAIRS[a.pair];
+  const size = P.lot ? `${(Math.floor(usd / (a.stop * P.lot) * 100) / 100).toFixed(2)} lot`
+    : a.pair === 'BTCUSDT' ? `${(usd / a.stop).toFixed(4)} BTC`
+    : `${(usd / a.stop).toFixed(2)} $/${P.unit === 'pts' ? 'pt' : P.unit}`;
   return { risk, usd, size };
 }
 
@@ -367,11 +406,17 @@ function renderGate() {
 
   if (st.kind === 'yn') return `${head}<p class="q">${st.q}</p>
     <div class="pair"><button data-act="yn" data-v="oui">Oui</button><button data-act="yn" data-v="non">Non</button></div>${quit}`;
-  if (st.kind === 'pick') return `${head}<p class="q">${st.q}</p>
-    <div class="choices">${st.opts.map(o => `<button data-act="pick" data-v="${o}">${o}</button>`).join('')}</div>${quit}`;
+  if (st.kind === 'pick') {
+    const label = o => st.key === 'pair' ? pname(o) : PLANS[o].name;
+    const why = o => !assetDone(narrative()[o]) ? 'narrative à faire' : biasOf(o) === 'Observation' ? 'observation' : 'marché fermé';
+    return `${head}<p class="q">${st.q}</p>
+    <div class="choices">${st.all.map(o => st.opts.includes(o)
+      ? `<button data-act="pick" data-v="${o}">${label(o)}</button>`
+      : `<button disabled>${label(o)} <span class="small">· ${why(o)}</span></button>`).join('')}</div>${quit}`;
+  }
   if (st.kind === 'grade') {
     const g = grade(a);
-    if (!g) { setTimeout(() => fail('Grade C : moins de 3 critères sur 4'), 0); return ''; }
+    if (!g) { setTimeout(() => fail('Grade C : plus d\'un critère manquant'), 0); return ''; }
     a.grade = g;
     return `${head}<p class="dim">Grade</p><div class="grade">${g}</div>
       <p class="sub" style="margin-top:12px">Risque ${g === 'A' ? S.settings.riskA : S.settings.riskB} % du capital.</p>
@@ -379,7 +424,7 @@ function renderGate() {
   }
   if (st.kind === 'sheet') {
     const f = (id, label) => `<label>${label}</label><input id="${id}" type="number" inputmode="decimal" step="any">`;
-    return `${head}<p class="q">Fiche position ${a.pair} ${a.dir === 'long' ? '↑ long' : '↓ short'}.</p>
+    return `${head}<p class="q">Fiche position ${pname(a.pair)} ${a.dir === 'long' ? '↑ long' : '↓ short'} · ${PLANS[a.plan].name}.</p>
       ${f('p_entry', 'Entrée (prix)')}${f('p_sl', 'Stop loss (prix)')}
       ${f('p_tp1', 'TP1 — 50 % du CRT (prix)')}${f('p_tp2', 'TP2 — extrême opposé (prix)')}
       ${f('p_spread', `Spread actuel (${unit(a.pair)})`)}
@@ -392,7 +437,7 @@ function renderGate() {
     const z = sizing(a);
     return `<h1>Ticket</h1><p class="sub">Exactement ça. Rien de plus.</p>
       <div class="card ticket">
-        <div class="row"><span class="dim">Paire</span><b>${a.pair}</b></div>
+        <div class="row"><span class="dim">Paire</span><b>${pname(a.pair)} · ${PLANS[a.plan].name}</b></div>
         <div class="row"><span class="dim">Sens</span><b>${a.dir === 'long' ? '↑ Long' : '↓ Short'}</b></div>
         <div class="row"><span class="dim">Grade</span><b>${a.grade} · ${z.risk} %</b></div>
         <div class="row"><span class="dim">Risque</span><b>${z.usd.toFixed(0)} $</b></div>
@@ -421,15 +466,13 @@ const ACTIONS = {
   yn(b) {
     const st = gateSteps()[gate.i], v = b.dataset.v;
     if (st.failOn && v === st.failOn) return fail(st.reason);
-    if (st.onPass) gate.a[st.onPass] = v === 'oui';
+    if (st.gradeKey) gate.a.g[st.gradeKey] = v === 'oui';
     next();
   },
   pick(b) {
     const st = gateSteps()[gate.i], v = b.dataset.v;
-    const err = st.check?.(v);
-    if (err) return fail(err);
     gate.a[st.key] = v;
-    if (st.key === 'profile') gate.a.dir = v === 'OHLC' ? 'short' : 'long';
+    if (st.key === 'pair') gate.a.dir = biasOf(v) === 'Short' ? 'short' : 'long';
     next();
   },
   sheet() {
@@ -454,7 +497,7 @@ const ACTIONS = {
   },
   enter() {
     const a = gate.a, z = sizing(a);
-    S.trades.push({ id: Date.now().toString(36), ts: Date.now(), day: tradingDay(), pair: a.pair, dir: a.dir,
+    S.trades.push({ id: Date.now().toString(36), ts: Date.now(), day: tradingDay(), pair: a.pair, plan: a.plan, dir: a.dir,
       grade: a.grade, risk: z.risk, entry: a.entry, sl: a.sl, tp1: a.tp1, tp2: a.tp2, stop: a.stop, tp: a.tp,
       size: z.size, r: null, broke: [], mgmt: [] });
     save();
@@ -489,13 +532,16 @@ const ACTIONS = {
       const dol = card.querySelector('.dol').value.trim(), key = card.querySelector('.key').value.trim();
       if (bias || dol || key) assets[x] = { bias, dol, key };
     }
-    const dx = assets.DXY?.bias, eu = assets.EURUSD?.bias;
-    if (dx && eu && dx !== 'Observation' && dx === eu)
-      return alert(`DXY ${dx} et EURUSD ${eu} : incohérent. Le DXY et l'EURUSD vont en sens inverse.`);
+    const dx = assets.DXY?.bias;
+    for (const x of ['EURUSD', 'GBPUSD']) {
+      const b = assets[x]?.bias;
+      if (dx && b && dx !== 'Observation' && dx === b)
+        return alert(`DXY ${dx} et ${pname(x)} ${b} : incohérent. Le DXY et ${pname(x)} vont en sens inverse.`);
+    }
     S.weeks[k] = { ...S.weeks[k], assets, notes: $('#notes').value.trim(), ts: Date.now() };
     save();
     const miss = missingAssets(k);
-    if (miss.length) { alert(`Enregistré. Reste à faire : ${miss.join(', ')} (biais, DOL et key level).`); return render(); }
+    if (miss.length) { alert(`Enregistré. Reste à faire : ${miss.map(pname).join(', ')} (biais, DOL et key level).`); return render(); }
     tab = 'today'; render();
   },
   saveSettings() {
