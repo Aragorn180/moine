@@ -133,13 +133,16 @@ const pname = pair => PAIRS[pair]?.name || pair;
 const openTrade = () => S.trades.find(t => t.r == null);
 
 // Paires proposables : narrative faite, pas en Observation, marché ouvert.
-const tradable = () => ASSETS.filter(p => assetDone(narrative()[p]) && biasOf(p) !== 'Observation'
+const tradable = () => S.test ? ASSETS : ASSETS.filter(p => assetDone(narrative()[p]) && biasOf(p) !== 'Observation'
   && (PAIRS[p].h24 || !forexClosed()));
 
 // ---------- statut du jour ----------
 const tradesOn = d => S.trades.filter(t => t.day === d);
 function status() {
   const now = Date.now(), d = tradingDay(), miss = missingAssets();
+  // Mode test : on parcourt les questions sans narrative ni limite ; rien n'est enregistré, MT5 reste bloqué.
+  if (S.test)
+    return { ok: true, cls: 'wait', title: 'Mode test.', detail: 'Rien n\'est enregistré. MT5 reste bloqué.' };
   if (miss.length)
     return { ok: false, cls: 'no', title: 'MT5 bloqué.', detail: `Narrative de la semaine à faire : ${miss.map(pname).join(', ')}.`, go: 'week' };
   if (S.cooldownUntil > now)
@@ -168,7 +171,8 @@ function render() {
   applyPending();
   $('#tabs').classList.toggle('hidden', !!gate);
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  $('#view').innerHTML = gate ? renderGate() : VIEWS[tab]();
+  $('#view').innerHTML = (S.test ? '<div class="tag o" style="margin-bottom:8px">MODE TEST</div>' : '')
+    + (gate ? renderGate() : VIEWS[tab]());
 }
 
 function quartersStrip() {
@@ -207,7 +211,7 @@ const VIEWS = {
 
   position() {
     const t = openTrade();
-    if (t) return `
+    if (t && !S.test) return `
       <h1>Position</h1>
       <p class="sub">MT5 reste bloqué. Il ne s'ouvre que pour une action prévue par le plan.</p>
       ${tradeCard(t)}
@@ -306,6 +310,11 @@ const VIEWS = {
         </ol>
         <p class="dim" style="margin:0">Au premier lancement, autorise toujours l'accès au presse-papiers.</p>
       </div>
+      <h2>Mode test</h2>
+      <div class="card small">
+        <p>Parcourir les questions sans narrative, sans fenêtre horaire ni limite. Rien n'est enregistré et MT5 reste bloqué.</p>
+        <button class="${S.test ? 'primary' : ''}" data-act="toggleTest">${S.test ? 'Quitter le mode test' : 'Activer le mode test'}</button>
+      </div>
       <h2>Données</h2>
       <div class="stack">
         <button data-act="export">Exporter (JSON)</button>
@@ -349,6 +358,7 @@ function gateSteps() {
   const ask = prefix => (x, i) => ({ kind: x.dir ? 'dir' : 'yn', ...x, key: prefix + i });
   return [
     { kind: 'pick', q: 'Paire ?', key: 'pair', opts: tradable(), all: ASSETS },
+    ...(S.test ? [{ kind: 'pick', q: 'Sens ?', key: 'dir', opts: ['long', 'short'], all: ['long', 'short'] }] : []),
     { kind: 'pick', q: 'Plan ?', key: 'plan', opts: Object.keys(PLANS), all: Object.keys(PLANS) },
     ...COMMON.map(ask('c')),
     ...(plan ? plan.q.map(ask('p')) : []),
@@ -364,6 +374,7 @@ function startGate() { gate = { i: 0, a: { g: {} } }; render(); }
 
 function fail(reason) {
   const now = Date.now();
+  if (S.test) { gate = { done: 'fail', reason }; return render(); }
   S.events.push({ ts: now, day: tradingDay(), type: 'fail', reason });
   S.cooldownUntil = now + S.settings.cooldownMin * 60e3;
   save();
@@ -395,13 +406,13 @@ function renderGate() {
     <h1>Pas de trade.</h1>
     <p class="sub">${esc(gate.reason)}</p>
     <div class="card"><p>Tu viens de protéger ton compte. Le marché sera là demain.</p>
-    <p class="dim small" style="margin:0">Nouvel essai possible à ${hhmm(S.cooldownUntil)}.</p></div>
+    <p class="dim small" style="margin:0">${S.test ? 'Mode test : pas de pause, rien enregistré.' : `Nouvel essai possible à ${hhmm(S.cooldownUntil)}.`}</p></div>
     <button class="primary" data-act="closeGate">OK</button>`;
   if (gate.done === 'skip') return `
     <h1>Bien.</h1><p class="sub">Ne pas trader est une position.</p>
     <button class="primary" data-act="closeGate">OK</button>`;
   if (gate.done === 'in') return `
-    <h1>MT5 ouvert.</h1><p class="sub">${gate.until ? `Jusqu'à ${hhmm(gate.until)}. Place exactement le ticket, SL et TP compris, puis laisse le plan travailler.`
+    <h1>${S.test ? 'Fin du test.' : 'MT5 ouvert.'}</h1><p class="sub">${S.test ? 'En vrai, MT5 s\'ouvrirait ici. Rien n\'a été enregistré.' : gate.until ? `Jusqu'à ${hhmm(gate.until)}. Place exactement le ticket, SL et TP compris, puis laisse le plan travailler.`
       : 'Copie du jeton impossible : retourne dans Position et réessaie.'}</p>
     <button class="primary" data-act="closeGate">OK</button>`;
 
@@ -414,7 +425,7 @@ function renderGate() {
   if (st.kind === 'dir') return `${head}<p class="q">${st.q}</p>
     <div class="pair">${st.dir.map(([l, d]) => `<button data-act="answer" data-v="${d === a.dir ? 1 : 0}">${l}</button>`).join('')}</div>${quit}`;
   if (st.kind === 'pick') {
-    const label = o => st.key === 'pair' ? pname(o) : PLANS[o].name;
+    const label = o => st.key === 'pair' ? pname(o) : st.key === 'dir' ? (o === 'long' ? '↑ Long' : '↓ Short') : PLANS[o].name;
     const why = o => !assetDone(narrative()[o]) ? 'narrative à faire' : biasOf(o) === 'Observation' ? 'observation' : 'marché fermé';
     return `${head}<p class="q">${st.q}</p>
     <div class="choices">${st.all.map(o => st.opts.includes(o)
@@ -465,8 +476,10 @@ function renderGate() {
 const ACTIONS = {
   gate: startGate,
   next,
+  toggleTest() { S.test = !S.test; save(); tab = S.test ? 'position' : 'settings'; render(); },
   closeGate() { gate = null; tab = 'today'; render(); },
   abandon() {
+    if (S.test) { gate = { done: 'skip' }; return render(); }
     S.events.push({ ts: Date.now(), day: tradingDay(), type: 'skip', reason: 'Abstention volontaire' });
     save(); gate = { done: 'skip' }; render();
   },
@@ -480,7 +493,7 @@ const ACTIONS = {
   pick(b) {
     const st = gateSteps()[gate.i], v = b.dataset.v;
     gate.a[st.key] = v;
-    if (st.key === 'pair') gate.a.dir = biasOf(v) === 'Short' ? 'short' : 'long';
+    if (st.key === 'pair' && !S.test) gate.a.dir = biasOf(v) === 'Short' ? 'short' : 'long';
     next();
   },
   sheet() {
@@ -504,6 +517,7 @@ const ACTIONS = {
     next();
   },
   enter() {
+    if (S.test) { gate = { done: 'in' }; return render(); }
     const a = gate.a, z = sizing(a);
     S.trades.push({ id: Date.now().toString(36), ts: Date.now(), day: tradingDay(), pair: a.pair, plan: a.plan, dir: a.dir,
       grade: a.grade, risk: z.risk, entry: a.entry, sl: a.sl, tp1: a.tp1, tp2: a.tp2, stop: a.stop, tp: a.tp,
