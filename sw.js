@@ -1,5 +1,5 @@
 // Cache de l'app pour qu'elle s'ouvre hors ligne. Monter VERSION à chaque déploiement.
-const VERSION = 'moine-v4';
+const VERSION = 'moine-v5';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {

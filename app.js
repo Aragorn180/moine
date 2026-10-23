@@ -16,33 +16,49 @@ const ASSETS = Object.keys(PAIRS);
 // Narrative obligatoire chaque semaine sur ces trois-là, sinon MT5 reste bloqué. GU et NAS : seulement pour les trader.
 const REQUIRED = ['DXY', 'EURUSD', 'BTCUSDT'];
 
-// Questions oui/non par plan. stop : « oui » = pas de trade. must : « non » = pas de trade.
-// grade : compte pour le grade (tout oui = A, un non = B, plus = pas de trade).
+// Questions courtes, une par écran. mode stop : « oui » = pas de trade. must : « non » (ou contre le sens) = pas de trade.
+// grade : compte pour le grade (tout bon = A, un raté = B, plus = pas de trade).
+// dir : choix dont chaque réponse a un sens ; elle doit aller dans le sens du trade.
+const WEEKLY = [['OLHC', 'long'], ['OHLC', 'short']];
+const BULLBEAR = [['Bullish', 'long'], ['Bearish', 'short']];
+const COMMON = [
+  { q: 'Sens DOL ?', mode: 'must', why: 'Contre la DOL' },
+  { q: 'News rouge ?', mode: 'stop', why: 'News rouge' },
+  { q: 'Biais tranché ?', mode: 'must', why: 'Biais pas tranché' },
+  { q: 'Contre un CRT noté ?', mode: 'stop', why: 'Contre un CRT noté' },
+  { q: 'Weekly ?', dir: WEEKLY, mode: 'grade' },
+  { q: 'Dealing range 20 ?', dir: BULLBEAR, mode: 'grade' },
+  { q: 'Dealing range 40 ?', dir: BULLBEAR, mode: 'grade' },
+  { q: 'Dealing range 60 ?', dir: BULLBEAR, mode: 'grade' },
+  { q: 'KL ?', mode: 'grade' },
+  { q: 'SMT ?', mode: 'grade' },
+];
 const PLANS = {
   daily: { name: 'CRT Daily', q: [
-    { must: 'La daily est tranchée dans le sens de la narrative (OHLC → short, OLHC → long) ?', why: 'Daily pas tranchée ou contre la narrative' },
-    { must: 'CRT Daily valide : purge du range de la daily précédente puis reclose ?', why: 'CRT Daily pas valide' },
-    { grade: 'Purge horaire : à l\'ouverture d\'une H4 HP (21h, 1h, 5h ou 9h NY) ?' },
-    { grade: 'KL : la purge se fait sur le key level de la semaine ?' },
-    { grade: 'SMT : {smt} n\'a pas clôturé au-delà de son extrême ?' },
-    { must: 'Entrée en TF basse (H1 / M15) après la purge, aucun ordre posé avant ?', why: 'Entrée anticipée' },
+    { q: 'Daily ?', dir: WEEKLY, mode: 'must', why: 'Daily contre le trade' },
+    { q: 'CRT Daily valide ?', mode: 'must', why: 'CRT Daily pas valide' },
+    { q: 'Purge horaire HP ?', mode: 'grade' },
+    { q: 'Entrée après la purge ?', mode: 'must', why: 'Entrée anticipée' },
   ] },
   h4: { name: 'CRT H4', q: [
-    { must: 'La H4 va dans le sens de la daily et de la narrative ?', why: 'H4 contre la daily ou la narrative' },
-    { must: 'CRT H4 valide : purge du range de la H4 précédente puis reclose ?', why: 'CRT H4 pas valide' },
-    { grade: 'Purge horaire canon : ouverture de 1h, 5h ou 9h NY ?' },
-    { grade: 'KL : la purge se fait sur un key level HTF ?' },
-    { grade: 'SMT : {smt} n\'a pas clôturé au-delà (Queen Slayer : le DXY a purgé son niveau) ?' },
-    { must: 'Entrée M15 au retour sur l\'entry, après la purge — jamais d\'ordre posé avant ?', why: 'Entrée anticipée' },
+    { q: 'Daily ?', dir: WEEKLY, mode: 'must', why: 'Daily contre le trade' },
+    { q: 'CRT H4 valide ?', mode: 'must', why: 'CRT H4 pas valide' },
+    { q: 'Purge horaire 1h · 5h · 9h ?', mode: 'grade' },
+    { q: 'Entrée M15 après la purge ?', mode: 'must', why: 'Entrée anticipée' },
   ] },
   ara: { name: 'Ara\'s Model 🧪', q: [
-    { must: 'CRT Daily valide dans le sens de la narrative ?', why: 'CRT Daily pas valide' },
-    { grade: '1er TS : la purge tombe dans le bon quart de la Daily (blocs 4 h depuis 17h NY) ?' },
-    { grade: '2e TS : la purge tombe dans le bon quart de la H4 (blocs 1 h) ?' },
-    { grade: 'KL : les purges se font sur le key level ?' },
-    { must: 'Entrée H1 après les deux TS, aucun ordre posé avant ?', why: 'Entrée anticipée' },
+    { q: 'CRT Daily valide ?', mode: 'must', why: 'CRT Daily pas valide' },
+    { q: 'TS 1 dans le bon quart Daily ?', mode: 'grade' },
+    { q: 'TS 2 dans le bon quart H4 ?', mode: 'grade' },
+    { q: 'Entrée H1 après les TS ?', mode: 'must', why: 'Entrée anticipée' },
   ] },
 };
+const FINAL = [
+  { q: 'SL derrière la purge ?', mode: 'must', why: 'SL mal placé' },
+  { q: 'TP1 · TP2 · BE écrits ?', mode: 'must', why: 'Sortie pas écrite' },
+  { q: 'Trade de rattrapage ?', mode: 'stop', why: 'Trade de rattrapage' },
+  { q: 'Calme ?', mode: 'must', why: 'État émotionnel' },
+];
 const UNLOCK = 'MOINE|'; // préfixe du jeton lu par le raccourci MetaTrader
 const QUARTERS = [['Q1', 17], ['Q2', 21], ['Q3', 1], ['Q4', 5], ['Q5', 9], ['Q6', 13]];
 const HP = new Set([1, 2, 3, 4]); // Q2..Q5 : ouvertures 21h, 1h, 5h, 9h NY
@@ -182,10 +198,10 @@ const VIEWS = {
       ${todays.length ? `<h2>Aujourd'hui</h2>${todays.map(tradeCard).join('')}` : ''}
       <h2>Règles</h2>
       <div class="card small dim">
-        Paire → plan (CRT Daily, CRT H4, Ara's Model 🧪) → questions oui / non → fiche position.<br>
-        Dans le sens de la narrative, pas de news rouge, purge à l'heure, sur le KL, reclose.<br>
+        Paire → plan → questions → fiche position.<br>
+        Confluences : Weekly, DR 20 · 40 · 60, KL, SMT, purge horaire.<br>
         Jamais d'ordre posé avant la purge. RR ≥ 2.<br>
-        A = tout oui → ${S.settings.riskA} % · B = un non → ${S.settings.riskB} % · sinon rien.
+        A = toutes → ${S.settings.riskA} % · B = une manquante → ${S.settings.riskB} % · sinon rien.
       </div>`;
   },
 
@@ -329,27 +345,16 @@ function cleanStreak() {
 // ---------- questionnaire d'entrée ----------
 // Une question par écran : pas de « tout cocher » réflexe.
 function gateSteps() {
-  const a = gate?.a || {}, nar = narrative()[a.pair] || {};
-  const yn = (q, o) => ({ kind: 'yn', q, ...o });
-  const plan = PLANS[a.plan];
-  const smt = a.pair ? PAIRS[a.pair].smt : '';
+  const a = gate?.a || {}, plan = PLANS[a.plan];
+  const ask = prefix => (x, i) => ({ kind: x.dir ? 'dir' : 'yn', ...x, key: prefix + i });
   return [
-    { kind: 'pick', q: 'Quelle paire ?', key: 'pair', opts: tradable(), all: ASSETS },
-    { kind: 'pick', q: 'Quel plan ?', key: 'plan', opts: Object.keys(PLANS), all: Object.keys(PLANS) },
-    yn(`Le trade va dans le sens de la narrative ${pname(a.pair)} (${String(nar.bias).toLowerCase()}) — DOL ${esc(nar.dol)} ?`,
-      { failOn: 'non', reason: 'Contre la narrative de la semaine' }),
-    yn('News rouge (NFP, CPI, FOMC…) pendant le trade ?', { failOn: 'oui', reason: 'News rouge' }),
-    yn('Mon biais n\'est pas tranché (« 2 options », « les deux me vont ») ?', { failOn: 'oui', reason: 'Biais pas tranché' }),
-    yn('Je trade contre un CRT que j\'ai moi-même noté (en l\'appelant « trap ») ?', { failOn: 'oui', reason: 'Contre un CRT noté' }),
-    ...(plan ? plan.q.map((x, i) => x.must
-      ? yn(x.must.replace('{smt}', smt), { failOn: 'non', reason: x.why })
-      : yn(x.grade.replace('{smt}', smt), { gradeKey: 'g' + i })) : []),
+    { kind: 'pick', q: 'Paire ?', key: 'pair', opts: tradable(), all: ASSETS },
+    { kind: 'pick', q: 'Plan ?', key: 'plan', opts: Object.keys(PLANS), all: Object.keys(PLANS) },
+    ...COMMON.map(ask('c')),
+    ...(plan ? plan.q.map(ask('p')) : []),
     { kind: 'grade' },
     { kind: 'sheet' },
-    yn('SL derrière l\'extrême de la purge + marge (pas au pip) ?', { failOn: 'non', reason: 'SL mal placé' }),
-    yn('TP1 (50 % du CRT), TP2 et BE sont écrits ?', { failOn: 'non', reason: 'Sortie pas écrite' }),
-    yn('Je prends ce trade parce que je n\'ai rien eu depuis longtemps ?', { failOn: 'oui', reason: 'Trade de rattrapage' }),
-    yn('Je suis calme ou focus — pas fatigué, pas anxieux ?', { failOn: 'non', reason: 'État émotionnel' }),
+    ...FINAL.map(ask('f')),
     { kind: 'oath' },
     { kind: 'ticket' },
   ];
@@ -369,7 +374,7 @@ function fail(reason) {
 function next() { gate.i++; render(); }
 
 function grade(a) {
-  const keys = gateSteps().filter(x => x.gradeKey).map(x => x.gradeKey);
+  const keys = gateSteps().filter(x => x.mode === 'grade').map(x => x.key);
   const miss = keys.filter(k => !a.g[k]).length;
   return miss === 0 ? 'A' : miss === 1 ? 'B' : null;
 }
@@ -405,7 +410,9 @@ function renderGate() {
   const quit = '<button style="margin-top:24px" data-act="abandon">Je n\'entre pas</button>';
 
   if (st.kind === 'yn') return `${head}<p class="q">${st.q}</p>
-    <div class="pair"><button data-act="yn" data-v="oui">Oui</button><button data-act="yn" data-v="non">Non</button></div>${quit}`;
+    <div class="pair"><button data-act="answer" data-v="1">Oui</button><button data-act="answer" data-v="0">Non</button></div>${quit}`;
+  if (st.kind === 'dir') return `${head}<p class="q">${st.q}</p>
+    <div class="pair">${st.dir.map(([l, d]) => `<button data-act="answer" data-v="${d === a.dir ? 1 : 0}">${l}</button>`).join('')}</div>${quit}`;
   if (st.kind === 'pick') {
     const label = o => st.key === 'pair' ? pname(o) : PLANS[o].name;
     const why = o => !assetDone(narrative()[o]) ? 'narrative à faire' : biasOf(o) === 'Observation' ? 'observation' : 'marché fermé';
@@ -416,7 +423,7 @@ function renderGate() {
   }
   if (st.kind === 'grade') {
     const g = grade(a);
-    if (!g) { setTimeout(() => fail('Grade C : plus d\'un critère manquant'), 0); return ''; }
+    if (!g) { setTimeout(() => fail('Grade C : plus d\'une confluence manquante'), 0); return ''; }
     a.grade = g;
     return `${head}<p class="dim">Grade</p><div class="grade">${g}</div>
       <p class="sub" style="margin-top:12px">Risque ${g === 'A' ? S.settings.riskA : S.settings.riskB} % du capital.</p>
@@ -463,10 +470,11 @@ const ACTIONS = {
     S.events.push({ ts: Date.now(), day: tradingDay(), type: 'skip', reason: 'Abstention volontaire' });
     save(); gate = { done: 'skip' }; render();
   },
-  yn(b) {
-    const st = gateSteps()[gate.i], v = b.dataset.v;
-    if (st.failOn && v === st.failOn) return fail(st.reason);
-    if (st.gradeKey) gate.a.g[st.gradeKey] = v === 'oui';
+  // v = 1 : « oui », ou réponse dans le sens du trade.
+  answer(b) {
+    const st = gateSteps()[gate.i], yes = b.dataset.v === '1';
+    if (st.mode === 'stop' ? yes : st.mode === 'must' && !yes) return fail(st.why);
+    if (st.mode === 'grade') gate.a.g[st.key] = yes;
     next();
   },
   pick(b) {
