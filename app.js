@@ -20,16 +20,17 @@ const REQUIRED = ['DXY', 'EURUSD', 'BTCUSDT'];
 // grade : compte pour le grade (tout bon = A, un ou deux ratés = B, plus = pas de trade).
 // dir : choix dont chaque réponse a un sens ; elle doit aller dans le sens du trade.
 const WEEKLY = [['OLHC', 'long'], ['OHLC', 'short']];
-const BULLBEAR = [['Bullish', 'long'], ['Bearish', 'short']];
+// Dealing range : un buy se prend en zone discount, un sell en zone premium.
+const PD = [['Discount', 'long'], ['Premium', 'short']];
 const COMMON = [
   { q: 'Sens DOL ?', mode: 'must', why: 'Contre la DOL' },
   { q: 'News rouge ?', mode: 'stop', why: 'News rouge' },
   { id: 'biais', q: 'Biais tranché ?', mode: 'must', why: 'Biais pas tranché' },
   { q: 'Contre un CRT noté ?', mode: 'stop', why: 'Contre un CRT noté' },
   { q: 'Weekly ?', dir: WEEKLY, mode: 'grade' },
-  { q: 'Dealing range 20 ?', dir: BULLBEAR, mode: 'grade' },
-  { q: 'Dealing range 40 ?', dir: BULLBEAR, mode: 'grade' },
-  { q: 'Dealing range 60 ?', dir: BULLBEAR, mode: 'grade' },
+  { q: 'Dealing range 20 ?', dir: PD, mode: 'grade' },
+  { q: 'Dealing range 40 ?', dir: PD, mode: 'grade' },
+  { q: 'Dealing range 60 ?', dir: PD, mode: 'grade' },
   { q: 'KL ?', mode: 'grade' },
   { q: 'SMT ?', mode: 'grade' },
 ];
