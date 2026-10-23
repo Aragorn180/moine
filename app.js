@@ -3,13 +3,16 @@
 // Tout est stocké en local (localStorage) sur l'iPhone ; aucun serveur.
 
 const KEY = 'moine.v1';
-const DEFAULTS = { capital: 50000, riskA: 0.5, riskB: 0.25, cooldownMin: 30, maxTrades: 1 };
+const DEFAULTS = { capital: 50000, riskA: 0.5, riskB: 0.25, cooldownMin: 30, maxTrades: 1, unlockMin: 10 };
 // Narrative hebdo obligatoire sur ces trois actifs ; seuls EURUSD et BTCUSDT se tradent (DXY = lecture).
 const ASSETS = ['DXY', 'EURUSD', 'BTCUSDT'];
 const PAIRS = ['EURUSD', 'BTCUSDT'];
 const UNLOCK = 'MOINE|'; // préfixe du jeton lu par le raccourci MetaTrader
 const QUARTERS = [['Q1', 17], ['Q2', 21], ['Q3', 1], ['Q4', 5], ['Q5', 9], ['Q6', 13]];
 const HP = new Set([1, 2, 3, 4]); // Q2..Q5 : ouvertures 21h, 1h, 5h, 9h NY
+// Seules raisons de rouvrir MT5 une fois en position : les actions écrites dans le plan.
+const MANAGE = ['TP1 touché : partiel 50 %', 'BE du runner (clôture au-delà du FVG)', 'Clôture du vendredi', 'SL ou TP2 touché : vérifier'];
+const MANAGE_MIN = 5;
 const BREAKS = ['SL déplacé', 'Sortie anticipée', 'Surtaille', 'Ré-entrée', 'Hors plan'];
 const STOPS_A = [
   'Mon biais HTF n\'est pas tranché (« 2 options », « les deux me vont ») ?',
@@ -70,22 +73,19 @@ const narrative = (k = weekKey()) => S.weeks[k]?.assets || {};
 const missingAssets = (k = weekKey()) => ASSETS.filter(x => !assetDone(narrative(k)[x]));
 const biasOf = pair => narrative()[pair]?.bias;
 
-// Fin de validité du déverrouillage MT5 : dimanche 17h NY qui ouvre la semaine suivante.
-function unlockExpiry(k = weekKey()) {
-  const d = addDays(k, 6);
-  for (const off of ['-04:00', '-05:00']) {
-    const t = Date.parse(`${d}T17:00:00${off}`);
-    if (ny(t).h === 17) return t;
-  }
-}
-// Heure locale de l'iPhone, format que Raccourcis sait relire sans ambiguïté.
-function unlockToken() {
-  const x = new Date(unlockExpiry()), p = n => String(n).padStart(2, '0');
+// MT5 est toujours bloqué : Moine ne l'ouvre que quelques minutes, après une fiche position
+// validée ou pour une action de gestion prévue. Heure locale de l'iPhone, format relu par Raccourcis.
+function unlockToken(until) {
+  const x = new Date(until), p = n => String(n).padStart(2, '0');
   return `${UNLOCK}${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())} ${p(x.getHours())}:${p(x.getMinutes())}`;
 }
-async function copyUnlock() {
-  try { await navigator.clipboard.writeText(unlockToken()); return true; } catch (e) { return false; }
+function copyUnlock(minutes) {
+  const until = Date.now() + minutes * 60e3;
+  return navigator.clipboard.writeText(unlockToken(until)).then(() => until, () => null);
 }
+const pip = pair => pair === 'BTCUSDT' ? 1 : 0.0001;
+const unit = pair => pair === 'BTCUSDT' ? '$' : 'pips';
+const openTrade = () => S.trades.find(t => t.r == null);
 
 // ---------- statut du jour ----------
 const tradesOn = d => S.trades.filter(t => t.day === d);
@@ -130,7 +130,7 @@ function quartersStrip() {
 
 const VIEWS = {
   today() {
-    const st = status(), d = tradingDay(), n = ny(), nar = narrative(), open = !missingAssets().length;
+    const st = status(), d = tradingDay(), n = ny(), nar = narrative();
     const todays = tradesOn(d);
     return `
       <h1>Moine</h1>
@@ -140,10 +140,9 @@ const VIEWS = {
         <p class="dim" style="margin:8px 0 0">${st.detail}</p>
         ${quartersStrip()}
       </div>
-      ${st.ok ? '<button class="primary" data-act="gate">Je veux entrer</button>'
+      ${openTrade() ? '<button class="primary" data-tab="position">Voir ma position</button>'
+        : st.ok ? '<button class="primary" data-tab="position">Préparer une position</button>'
         : st.go ? `<button class="primary" data-tab="${st.go}">Écrire la narrative</button>` : ''}
-      ${open ? `<div style="margin-top:10px"><button data-act="unlock">Déverrouiller MT5</button></div>
-        <p class="dim small" style="margin:8px 4px 0">Valable jusqu'à dimanche ${hhmm(unlockExpiry())}.</p>` : ''}
       <h2>Semaine</h2><div class="card">${ASSETS.map(x => `
         <div class="row"><span class="dim">${x}</span>${assetDone(nar[x])
           ? `<b>${esc(nar[x].bias)}</b>` : '<span class="tag r">À faire</span>'}</div>`).join('')}</div>
@@ -155,6 +154,28 @@ const VIEWS = {
         Entrée M15 après la purge, jamais d'ordre posé avant. RR ≥ 2.<br>
         A = 4/4 → ${S.settings.riskA} % · B = 3/4 → ${S.settings.riskB} % · sinon rien.
       </div>`;
+  },
+
+  position() {
+    const t = openTrade();
+    if (t) return `
+      <h1>Position</h1>
+      <p class="sub">MT5 reste bloqué. Il ne s'ouvre que pour une action prévue par le plan.</p>
+      ${tradeCard(t)}
+      <h2>Ouvrir MT5 ${MANAGE_MIN} min pour</h2>
+      <div class="stack">${MANAGE.map(m => `<button data-act="manage" data-v="${esc(m)}">${esc(m)}</button>`).join('')}</div>
+      ${t.mgmt?.length ? `<h2>Gestion faite</h2><div class="card">${t.mgmt.map(m =>
+        `<div class="row small"><span class="dim">${hhmm(m.ts)}</span><span>${esc(m.why)}</span></div>`).join('')}</div>` : ''}`;
+    const st = status();
+    return `
+      <h1>Position</h1>
+      <p class="sub">Tu notes ton trade ici avant tout. MT5 s'ouvre ${S.settings.unlockMin} min pour placer exactement ce ticket.</p>
+      <div class="card">
+        <div class="status"><span class="dot ${st.cls}"></span><span class="big">${st.title}</span></div>
+        <p class="dim" style="margin:8px 0 0">${st.detail}</p>
+      </div>
+      ${st.ok ? '<button class="primary" data-act="gate">Préparer une position</button>'
+        : st.go ? `<button class="primary" data-tab="${st.go}">Écrire la narrative</button>` : ''}`;
   },
 
   week() {
@@ -218,11 +239,12 @@ const VIEWS = {
         ${field('riskB', 'Risque grade B (%)', '0.05')}
         ${field('maxTrades', 'Trades max par jour', '1')}
         ${field('cooldownMin', 'Pause après un refus (min)', '5')}
+        ${field('unlockMin', 'MT5 ouvert après une fiche validée (min)', '1')}
         <div style="margin-top:16px"><button class="primary" data-act="saveSettings">Programmer pour demain</button></div>
       </div>
       <h2>Bloquer MetaTrader</h2>
       <div class="card small">
-        <p>MT5 s'ouvre seulement si les narratives DXY, EURUSD et BTCUSDT sont faites. « Déverrouiller MT5 » copie un jeton valable jusqu'au dimanche 17h NY ; le raccourci le lit.</p>
+        <p>MT5 est toujours bloqué. Moine copie un jeton de quelques minutes quand une fiche position est validée (narratives faites, questionnaire passé) ou pour une action de gestion prévue. Le raccourci le lit.</p>
         <p>Raccourcis → Automatisation → <b>+</b> → <b>App</b> → MetaTrader 5 → <b>Est ouverte</b> → <b>Exécuter immédiatement</b> → Nouveau raccourci vide. Actions dans l'ordre :</p>
         <ol style="padding-left:20px;margin:0 0 12px">
           <li><b>Obtenir le presse-papiers</b></li>
@@ -230,7 +252,7 @@ const VIEWS = {
           <li><b>Obtenir le fichier du dossier</b> Raccourcis, <code>moine.txt</code>, « Erreur si introuvable » désactivé.</li>
           <li><b>Remplacer le texte</b> <code>MOINE|</code> par rien dans Fichier.</li>
           <li><b>Obtenir les dates de l'entrée</b> Texte remplacé.</li>
-          <li><b>Si</b> Dates <b>est après</b> Date actuelle : rien. <b>Sinon</b> : <b>Afficher la notification</b> « MT5 bloqué : narratives dans Moine », puis <b>Aller à l'écran d'accueil</b>. <b>Fin si</b>.</li>
+          <li><b>Si</b> Dates <b>est après</b> Date actuelle : rien. <b>Sinon</b> : <b>Afficher la notification</b> « MT5 bloqué : passe par Moine », puis <b>Aller à l'écran d'accueil</b>. <b>Fin si</b>.</li>
         </ol>
         <p class="dim" style="margin:0">Au premier lancement, autorise toujours l'accès au presse-papiers.</p>
       </div>
@@ -252,7 +274,11 @@ function tradeCard(t) {
          ? `<span class="tag r">${t.broke.map(esc).join(', ')}</span>` : '<span class="tag g">Respecté</span>'}</div>`;
   return `<div class="card ticket">
     <div class="row"><b>${t.pair} ${t.dir === 'long' ? '↑ Long' : '↓ Short'}</b><span class="tag">Grade ${t.grade} · ${t.risk} %</span></div>
-    <div class="row"><span class="dim">${t.day}</span><span class="dim">SL ${t.stop} · TP ${t.tp} · ${t.size}</span></div>
+    ${t.entry != null ? `<div class="row"><span class="dim">Entrée</span><b>${t.entry}</b></div>
+    <div class="row"><span class="dim">SL</span><b>${t.sl} (${t.stop} ${unit(t.pair)})</b></div>
+    <div class="row"><span class="dim">TP1 / TP2</span><b>${t.tp1} / ${t.tp2}</b></div>
+    <div class="row"><span class="dim">${t.day}</span><b>${t.size} · RR ${(t.tp / t.stop).toFixed(2)}</b></div>`
+    : `<div class="row"><span class="dim">${t.day}</span><span class="dim">SL ${t.stop} · TP ${t.tp} · ${t.size}</span></div>`}
     ${res}</div>`;
 }
 
@@ -283,7 +309,7 @@ function gateSteps() {
     yn(`C'est sur le key level de la semaine${a.key ? ` (${esc(a.key)})` : ''} ?`, null, null, 'kl'),
     yn(pair === 'EURUSD' ? 'SMT : le DXY n\'a pas clôturé au-delà de son extrême ?' : 'SMT : ETH n\'a pas clôturé au-delà de son extrême ?', null, null, 'smt'),
     { kind: 'grade' },
-    { kind: 'numbers' },
+    { kind: 'sheet' },
     yn('SL derrière l\'extrême de la purge + marge (pas au pip) ?', 'non', 'SL mal placé'),
     yn('TP1 (50 % du CRT), TP2 et BE sont écrits avant d\'entrer ?', 'non', 'Sortie pas écrite'),
     yn('Je suis calme ou focus — pas fatigué, pas anxieux, pas en rattrapage ?', 'non', 'État émotionnel'),
@@ -331,7 +357,8 @@ function renderGate() {
     <h1>Bien.</h1><p class="sub">Ne pas trader est une position.</p>
     <button class="primary" data-act="closeGate">OK</button>`;
   if (gate.done === 'in') return `
-    <h1>En position.</h1><p class="sub">Laisse le plan travailler. Pas de SL déplacé.</p>
+    <h1>MT5 ouvert.</h1><p class="sub">${gate.until ? `Jusqu'à ${hhmm(gate.until)}. Place exactement le ticket, SL et TP compris, puis laisse le plan travailler.`
+      : 'Copie du jeton impossible : retourne dans Position et réessaie.'}</p>
     <button class="primary" data-act="closeGate">OK</button>`;
 
   const steps = gateSteps(), st = steps[gate.i], a = gate.a;
@@ -350,13 +377,13 @@ function renderGate() {
       <p class="sub" style="margin-top:12px">Risque ${g === 'A' ? S.settings.riskA : S.settings.riskB} % du capital.</p>
       <button class="primary" data-act="next">Continuer</button>${quit}`;
   }
-  if (st.kind === 'numbers') {
-    const unit = a.pair === 'BTCUSDT' ? '$' : 'pips';
-    return `${head}<p class="q">Les chiffres.</p>
-      <label>Stop (${unit})</label><input id="n_stop" type="number" inputmode="decimal" step="any">
-      <label>TP2 — distance (${unit})</label><input id="n_tp" type="number" inputmode="decimal" step="any">
-      <label>Spread actuel (${unit})</label><input id="n_spread" type="number" inputmode="decimal" step="any">
-      <div style="margin-top:20px"><button class="primary" data-act="numbers">Vérifier</button></div>${quit}`;
+  if (st.kind === 'sheet') {
+    const f = (id, label) => `<label>${label}</label><input id="${id}" type="number" inputmode="decimal" step="any">`;
+    return `${head}<p class="q">Fiche position ${a.pair} ${a.dir === 'long' ? '↑ long' : '↓ short'}.</p>
+      ${f('p_entry', 'Entrée (prix)')}${f('p_sl', 'Stop loss (prix)')}
+      ${f('p_tp1', 'TP1 — 50 % du CRT (prix)')}${f('p_tp2', 'TP2 — extrême opposé (prix)')}
+      ${f('p_spread', `Spread actuel (${unit(a.pair)})`)}
+      <div style="margin-top:20px"><button class="primary" data-act="sheet">Vérifier</button></div>${quit}`;
   }
   if (st.kind === 'oath') return `${head}<p class="q">Écris : « je respecte mon stop »</p>
     <input id="oath" autocomplete="off" autocapitalize="off">
@@ -370,11 +397,13 @@ function renderGate() {
         <div class="row"><span class="dim">Grade</span><b>${a.grade} · ${z.risk} %</b></div>
         <div class="row"><span class="dim">Risque</span><b>${z.usd.toFixed(0)} $</b></div>
         <div class="row"><span class="dim">Taille</span><b>${z.size}</b></div>
-        <div class="row"><span class="dim">Stop / TP2</span><b>${a.stop} / ${a.tp}</b></div>
+        <div class="row"><span class="dim">Entrée</span><b>${a.entry}</b></div>
+        <div class="row"><span class="dim">SL</span><b>${a.sl} (${a.stop} ${unit(a.pair)})</b></div>
+        <div class="row"><span class="dim">TP1 (moitié)</span><b>${a.tp1}</b></div>
+        <div class="row"><span class="dim">TP2</span><b>${a.tp2}</b></div>
         <div class="row"><span class="dim">RR</span><b>${(a.tp / a.stop).toFixed(2)}</b></div>
-        <div class="row"><span class="dim">TP1</span><b>50 % du CRT, moitié de la taille</b></div>
       </div>
-      <div class="stack"><button class="primary" data-act="enter">J'entre</button>
+      <div class="stack"><button class="primary" data-act="enter">Ouvrir MT5 ${S.settings.unlockMin} min</button>
       <button data-act="abandon">Je n'entre pas</button></div>`;
   }
   return '';
@@ -403,12 +432,19 @@ const ACTIONS = {
     if (st.key === 'profile') gate.a.dir = v === 'OHLC' ? 'short' : 'long';
     next();
   },
-  numbers() {
-    const stop = +$('#n_stop').value, tp = +$('#n_tp').value, spread = +$('#n_spread').value;
-    if (!(stop > 0 && tp > 0 && spread >= 0) || $('#n_spread').value === '') return alert('Remplis les trois champs.');
+  sheet() {
+    const a = gate.a, v = id => $('#' + id).value.replace(',', '.');
+    const [entry, sl, tp1, tp2, spread] = ['p_entry', 'p_sl', 'p_tp1', 'p_tp2', 'p_spread'].map(id => parseFloat(v(id)));
+    if ([entry, sl, tp1, tp2, spread].some(isNaN) || spread < 0) return alert('Remplis les cinq champs.');
+    const up = a.dir === 'long' ? 1 : -1;
+    // Erreurs de saisie (mauvais côté) : on corrige, pas de pénalité.
+    if ((entry - sl) * up <= 0) return alert(`En ${a.dir}, le SL doit être ${up > 0 ? 'sous' : 'au-dessus de'} l'entrée.`);
+    if ((tp1 - entry) * up <= 0 || (tp2 - tp1) * up <= 0) return alert('Ordre attendu : entrée, puis TP1, puis TP2 dans le sens du trade.');
+    const stop = +(Math.abs(entry - sl) / pip(a.pair)).toFixed(1), tp = +(Math.abs(tp2 - entry) / pip(a.pair)).toFixed(1);
     if (tp / stop < 2) return fail(`RR ${(tp / stop).toFixed(2)} < 2`);
-    if (spread >= 0.15 * stop) return fail(`Spread ${spread} ≥ 15 % du stop`);
-    Object.assign(gate.a, { stop, tp, spread });
+    if (spread >= 0.15 * stop) return fail(`Spread ${spread} ≥ 15 % du stop (${stop} ${unit(a.pair)})`);
+    // Prix gardés tels que saisis pour l'affichage (1.1600 reste 1.1600).
+    Object.assign(a, { entry: v('p_entry'), sl: v('p_sl'), tp1: v('p_tp1'), tp2: v('p_tp2'), spread, stop, tp });
     next();
   },
   oath() {
@@ -419,8 +455,19 @@ const ACTIONS = {
   enter() {
     const a = gate.a, z = sizing(a);
     S.trades.push({ id: Date.now().toString(36), ts: Date.now(), day: tradingDay(), pair: a.pair, dir: a.dir,
-      grade: a.grade, risk: z.risk, stop: a.stop, tp: a.tp, size: z.size, r: null, broke: [] });
-    save(); gate = { done: 'in' }; render();
+      grade: a.grade, risk: z.risk, entry: a.entry, sl: a.sl, tp1: a.tp1, tp2: a.tp2, stop: a.stop, tp: a.tp,
+      size: z.size, r: null, broke: [], mgmt: [] });
+    save();
+    copyUnlock(S.settings.unlockMin).then(until => { gate = { done: 'in', until }; render(); });
+  },
+  manage(b) {
+    const t = openTrade(), why = b.dataset.v;
+    copyUnlock(MANAGE_MIN).then(until => {
+      if (!until) return alert('Copie impossible : réessaie.');
+      t.mgmt = [...(t.mgmt || []), { ts: Date.now(), why }];
+      save(); render();
+      alert(`MT5 ouvert jusqu'à ${hhmm(until)} pour : ${why}. Rien d'autre.`);
+    });
   },
   result(b) {
     const t = S.trades.find(x => x.id === b.dataset.id);
@@ -434,7 +481,7 @@ const ACTIONS = {
   bias(b) {
     b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
   },
-  async saveWeek() {
+  saveWeek() {
     const k = weekKey(), assets = { ...narrative(k) };
     // On enregistre ce qui est rempli ; un actif incomplet reste « à faire » et garde MT5 bloqué.
     for (const card of document.querySelectorAll('[data-asset]')) {
@@ -449,12 +496,7 @@ const ACTIONS = {
     save();
     const miss = missingAssets(k);
     if (miss.length) { alert(`Enregistré. Reste à faire : ${miss.join(', ')} (biais, DOL et key level).`); return render(); }
-    const copied = await copyUnlock();
-    alert(copied ? 'Narratives faites. MT5 déverrouillé : jeton copié, ouvre MT5.' : 'Narratives faites. Touche « Déverrouiller MT5 » sur l\'accueil.');
     tab = 'today'; render();
-  },
-  async unlock() {
-    alert(await copyUnlock() ? 'Jeton copié. Ouvre MT5 maintenant.' : 'Copie impossible : réessaie.');
   },
   saveSettings() {
     const next = {};
@@ -505,7 +547,7 @@ document.addEventListener('click', e => {
 
 // Rafraîchit l'heure et le statut à chaque retour dans l'app et chaque minute.
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !gate) render(); });
-setInterval(() => { if (!gate && tab === 'today') render(); }, 60e3);
+setInterval(() => { if (!gate && (tab === 'today' || tab === 'position')) render(); }, 60e3);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 render();

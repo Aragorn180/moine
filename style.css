@@ -80,7 +80,7 @@ label { display: block; font-size: 13px; color: var(--dim); margin: 14px 4px 6px
 .quarters div.now { background: var(--text); color: #000; font-weight: 700; }
 
 #tabs {
-  position: fixed; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(4, 1fr);
+  position: fixed; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr);
   padding: 6px 8px calc(env(safe-area-inset-bottom) + 6px);
   background: rgba(20,20,22,.75); -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
   border-top: 1px solid var(--line);
